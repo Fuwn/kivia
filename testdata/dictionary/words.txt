@@ -1,0 +1,9 @@
+option
+has
+resource
+parsed
+identifier
+allowlist
+context
+error
+expression
