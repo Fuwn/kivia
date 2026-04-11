@@ -108,7 +108,22 @@ func isUpperCaseToken(identifierName string, token string) bool {
 		return false
 	}
 
-	return strings.Contains(identifierName, strings.ToUpper(token))
+	upperToken := strings.ToUpper(token)
+
+	if !strings.Contains(identifierName, upperToken) {
+		return false
+	}
+
+	tokenIndex := strings.Index(identifierName, upperToken)
+	afterIndex := tokenIndex + len(upperToken)
+
+	if afterIndex >= len(identifierName) {
+		return true
+	}
+
+	nextRune, _ := utf8.DecodeRuneInString(identifierName[afterIndex:])
+
+	return !unicode.IsLower(nextRune)
 }
 
 func tokenize(name string) []string {
