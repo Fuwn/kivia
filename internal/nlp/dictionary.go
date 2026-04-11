@@ -2,6 +2,9 @@ package nlp
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/sajari/fuzzy"
@@ -23,6 +26,8 @@ type Dictionary struct {
 	wordsByFirstCharacter map[rune][]string
 }
 
+const modelVersion = 2
+
 func NewDictionary() (*Dictionary, error) {
 	words, err := loadWords()
 
@@ -32,7 +37,7 @@ func NewDictionary() (*Dictionary, error) {
 
 	wordSet := makeWordSet(words)
 	wordsByFirstCharacter := makeWordsByFirstCharacter(words)
-	model, loadErr := loadCachedModel()
+	model, loadErr := loadCachedModel(words)
 
 	if loadErr == nil {
 		return &Dictionary{model: model, words: wordSet, wordsByFirstCharacter: wordsByFirstCharacter}, nil
@@ -45,7 +50,7 @@ func NewDictionary() (*Dictionary, error) {
 	model.SetUseAutocomplete(false)
 	model.Train(words)
 
-	_ = saveCachedModel(model)
+	_ = saveCachedModel(model, words)
 
 	return &Dictionary{model: model, words: wordSet, wordsByFirstCharacter: wordsByFirstCharacter}, nil
 }
@@ -94,10 +99,11 @@ func (dictionary *Dictionary) isLexiconWord(token string) bool {
 	}
 
 	candidates := make([]string, 0, 16)
-	candidates = append(candidates, inflectionCandidates(token)...)
+	inflections := inflectionCandidates(token)
+	candidates = append(candidates, inflections...)
 	candidates = append(candidates, spellingVariantCandidates(token)...)
 
-	for _, candidate := range inflectionCandidates(token) {
+	for _, candidate := range inflections {
 		candidates = append(candidates, spellingVariantCandidates(candidate)...)
 	}
 
@@ -131,7 +137,7 @@ func (dictionary *Dictionary) AbbreviationExpansion(token string) (string, bool)
 
 	tokenLength := utf8.RuneCountInString(token)
 
-	if tokenLength <= 1 || tokenLength > 4 {
+	if tokenLength <= 1 || tokenLength > 5 {
 		return "", false
 	}
 
@@ -550,24 +556,75 @@ func normalizeToken(token string) string {
 	return match
 }
 
-func cachePath() (string, error) {
+func cacheDir() (string, error) {
 	base, err := os.UserCacheDir()
 
 	if err != nil {
 		return "", err
 	}
 
-	return filepath.Join(base, "kivia", "fuzzy_model_v1.json"), nil
+	return filepath.Join(base, "kivia"), nil
 }
 
-func loadCachedModel() (*fuzzy.Model, error) {
-	path, err := cachePath()
+func cachePaths() (modelPath string, metaPath string, err error) {
+	dir, err := cacheDir()
+
+	if err != nil {
+		return "", "", err
+	}
+
+	return filepath.Join(dir, "fuzzy_model_v2.json"), filepath.Join(dir, "metadata.json"), nil
+}
+
+type cacheMetadata struct {
+	Version        int    `json:"version"`
+	DictionaryHash string `json:"dictionaryHash"`
+}
+
+func computeDictionaryHash(words []string) string {
+	h := sha256.New()
+
+	for _, word := range words {
+		h.Write([]byte(word))
+	}
+
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+func isCacheStale(metadata cacheMetadata, words []string) bool {
+	if metadata.Version != modelVersion {
+		return true
+	}
+
+	expectedHash := computeDictionaryHash(words)
+
+	return metadata.DictionaryHash != expectedHash
+}
+
+func loadCachedModel(words []string) (*fuzzy.Model, error) {
+	modelPath, metaPath, err := cachePaths()
 
 	if err != nil {
 		return nil, err
 	}
 
-	model, err := fuzzy.Load(path)
+	metaData, err := os.ReadFile(metaPath)
+
+	if err != nil {
+		return nil, err
+	}
+
+	var metadata cacheMetadata
+
+	if err := json.Unmarshal(metaData, &metadata); err != nil {
+		return nil, err
+	}
+
+	if isCacheStale(metadata, words) {
+		return nil, errors.New("Cache is stale.")
+	}
+
+	model, err := fuzzy.Load(modelPath)
 
 	if err != nil {
 		return nil, err
@@ -576,22 +633,36 @@ func loadCachedModel() (*fuzzy.Model, error) {
 	return model, nil
 }
 
-func saveCachedModel(model *fuzzy.Model) error {
+func saveCachedModel(model *fuzzy.Model, words []string) error {
 	if model == nil {
 		return errors.New("Model cannot be nil.")
 	}
 
-	path, err := cachePath()
+	modelPath, metaPath, err := cachePaths()
 
 	if err != nil {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(modelPath), 0o755); err != nil {
 		return err
 	}
 
-	return model.Save(path)
+	if err := model.Save(modelPath); err != nil {
+		return err
+	}
+
+	metadata := cacheMetadata{
+		Version:        modelVersion,
+		DictionaryHash: computeDictionaryHash(words),
+	}
+	metaData, err := json.Marshal(metadata)
+
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(metaPath, metaData, 0o644)
 }
 
 var defaultDictionaryPaths = []string{
