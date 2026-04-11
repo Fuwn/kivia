@@ -40,11 +40,15 @@ func FromPath(path string) ([]Identifier, error) {
 	fileSet := token.NewFileSet()
 	identifiers := make([]Identifier, 0, 128)
 
+	var parseErrors []error
+
 	for _, filePath := range files {
 		fileNode, parseErr := parser.ParseFile(fileSet, filePath, nil, parser.SkipObjectResolution)
 
 		if parseErr != nil {
-			return nil, fmt.Errorf("Failed to parse %s: %w", filePath, parseErr)
+			parseErrors = append(parseErrors, fmt.Errorf("Failed to parse %s: %w", filePath, parseErr))
+
+			continue
 		}
 
 		collector := visitor{
@@ -55,6 +59,10 @@ func FromPath(path string) ([]Identifier, error) {
 		ast.Walk(&collector, fileNode)
 
 		identifiers = append(identifiers, collector.identifiers...)
+	}
+
+	if len(parseErrors) > 0 {
+		return nil, parseErrors[0]
 	}
 
 	return identifiers, nil
@@ -124,12 +132,16 @@ func (identifierVisitor *visitor) Visit(node ast.Node) ast.Visitor {
 			break
 		}
 
-		if keyIdentifier, ok := typedNode.Key.(*ast.Ident); ok {
-			identifierVisitor.addIdentifier(keyIdentifier, "rangeKey", Context{ValueExpression: renderExpression(identifierVisitor.fileSet, typedNode.X)})
+		if typedNode.Key != nil {
+			if keyIdentifier, ok := typedNode.Key.(*ast.Ident); ok {
+				identifierVisitor.addIdentifier(keyIdentifier, "rangeKey", Context{ValueExpression: renderExpression(identifierVisitor.fileSet, typedNode.X)})
+			}
 		}
 
-		if valueIdentifier, ok := typedNode.Value.(*ast.Ident); ok {
-			identifierVisitor.addIdentifier(valueIdentifier, "rangeValue", Context{ValueExpression: renderExpression(identifierVisitor.fileSet, typedNode.X)})
+		if typedNode.Value != nil {
+			if valueIdentifier, ok := typedNode.Value.(*ast.Ident); ok {
+				identifierVisitor.addIdentifier(valueIdentifier, "rangeValue", Context{ValueExpression: renderExpression(identifierVisitor.fileSet, typedNode.X)})
+			}
 		}
 	}
 
@@ -228,7 +240,7 @@ func discoverFiles(path string) ([]string, error) {
 	recursive := false
 
 	if strings.HasSuffix(path, "/...") {
-		searchRoot = strings.TrimSuffix(path, "/...")
+		searchRoot, _ = strings.CutSuffix(path, "/...")
 		recursive = true
 	}
 
@@ -264,7 +276,7 @@ func discoverFiles(path string) ([]string, error) {
 			}
 
 			if !recursive && candidate != searchRoot {
-				return filepath.SkipDir
+				return fs.SkipDir
 			}
 
 			return nil
